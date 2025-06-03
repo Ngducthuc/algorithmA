@@ -1,1 +1,5 @@
 flask
+pymongo
+flask-cors
+shapely
+requests
