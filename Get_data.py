@@ -362,4 +362,5 @@ def add_flight_path():
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))  # lấy PORT từ biến môi trường của Render
+    app.run(host='0.0.0.0', port=port)
