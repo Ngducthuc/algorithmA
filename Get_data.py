@@ -10,6 +10,8 @@ import os
 # Khởi tạo Flask app
 app = Flask(__name__)
 CORS(app)
+connectAPI = 'https://algorithma-84og.onrender.com'
+connectAPI2 = 'http://localhost:5000'
 
 # Kết nối MongoDB
 MONGO_URI = os.getenv(
@@ -79,14 +81,22 @@ def get_data_road_with_coordinates():
 @app.route("/data-no-flight", methods=["GET"])
 def get_data_no_flight():
     no_flight_collection = db["No_Flight"]
-    no_flight_zones = list(no_flight_collection.find({}, {"_id": 0, "name": 1, "coordinates": 1}))
+    no_flight_zones = list(no_flight_collection.find({}, {
+        "_id": 0,
+        "name": 1,
+        "type": 1,     
+        "coordinates": 1,
+        "center": 1,
+        "radius": 1
+    }))
     return jsonify(no_flight_zones), 200
+
 
 # Api Cấm bay
 @app.route("/get-point-no-flight", methods=["GET"])
 def get_no_flight_zones():
-    data_points = requests.get("http://localhost:5000/data-road").json()
-    data_no_flight = requests.get("http://localhost:5000/data-no-flight").json()
+    data_points = requests.get(f"{connectAPI2}/data-road").json()
+    data_no_flight = requests.get(f"{connectAPI2}/data-no-flight").json()
     no_flight_zones = [
         {
             "name": zone["name"],
@@ -124,7 +134,6 @@ def get_no_flight_zones():
 
 @app.route("/get-data-flight_path", methods=["GET"])
 def get_data_flight_path():
-    flight_path_collection = db["flight_path"]
     flight_paths = list(flight_path_collection.find({}, {"_id": 0, "name": 1, "waypoints": 1}))
 
     result = []
@@ -168,7 +177,46 @@ def haversine(p1, p2):
     a = sin(dlat / 2)**2 + cos(radians(lat1)) * cos(radians(lat2)) * sin(dlon / 2)**2
     c = 2 * asin(sqrt(a))
     return R * c * 0.539957
+def load_no_flight_zones():
+    zones = []
+    for z in No_Flight_collection.find({}, {"_id": 0}):
+        z_type = z.get("type")
 
+        if z_type == "polygon" and z.get("coordinates"):
+            try:
+                coords = [(pt[1], pt[0]) for pt in z["coordinates"]]
+                polygon = Polygon(coords)
+                zones.append(polygon)
+            except Exception as e:
+                print(f"[!] Lỗi polygon {z.get('name')}: {e}")
+
+        elif z_type == "circle" and z.get("center") and z.get("radius"):
+            try:
+                lat, lng = z["center"]
+                lat = float(lat)
+                lng = float(lng)
+                center_point = Point(lng, lat)
+
+                radius_m = float(z["radius"])  # radius theo mét
+                buffer_deg = radius_m / 111320  # mét → độ
+                circle_polygon = center_point.buffer(buffer_deg)
+
+                zones.append(circle_polygon)
+            except Exception as e:
+                print(f"[!] Lỗi circle {z.get('name')}: {e}")
+
+        else:
+            print(f"[!] Bỏ qua vùng không hợp lệ: {z.get('name')}")
+
+    print(f"[+] Đã load {len(zones)} vùng cấm bay")
+    return zones
+
+def is_blocked_by_no_flight(segment, zones):
+    for zone in zones:
+        if segment.intersects(zone):
+            print(f"[✘] Đoạn bị chặn bởi zone")
+            return True
+    return False
 def a_star(start, goal, points_dict, graph_edges, no_flight_polygons):
     open_set = [(0, [start])]
     paths = []
@@ -187,12 +235,27 @@ def a_star(start, goal, points_dict, graph_edges, no_flight_polygons):
                 continue
 
             segment = LineString([
-                (points_dict[current][1], points_dict[current][0]),
+                (points_dict[current][1], points_dict[current][0]),  # (lng, lat)
                 (points_dict[neighbor][1], points_dict[neighbor][0])
             ])
 
-            if any(segment.crosses(zone) or segment.within(zone) for zone in no_flight_polygons):
+            if is_blocked_by_no_flight(segment, no_flight_polygons):
                 continue
+            # violate = False
+            # for zone in no_flight_polygons:
+            #     if isinstance(zone, Polygon):
+            #         if segment.intersects(zone):
+            #             violate = True
+            #             break
+            #     elif isinstance(zone, tuple):
+            #         center, radius_km = zone
+            #         circle = center.buffer(radius_km / 111.32)
+            #         if segment.intersects(circle):
+            #             violate = True
+            #             break
+            # if violate:
+            #     continue
+
             new_path = path + [neighbor]
             cost = sum(
                 graph_edges[new_path[i]][j][1]
@@ -212,7 +275,6 @@ def k_shortest_paths(start, goal, k, points_dict, graph_edges, no_flight_polygon
     # Load map data
     paths = [first_path]
     candidates = []
-    # Add data vào candidates
     for i in range(1, k):
         for j in range(len(paths[-1]) - 1):
             spur_node = paths[-1][j]
@@ -254,7 +316,7 @@ def suggest_alt_flight():
     data = request.json
     start = data.get("from")
     end = data.get("to")
-    k = int(data.get("k", 3))
+    k = int(data.get("k", 3)) # Số lượng đường đi cần tìm
 
     if not start or not end:
         return jsonify({"error": "Thiếu điểm bắt đầu hoặc kết thúc"}), 400
@@ -274,13 +336,10 @@ def suggest_alt_flight():
             edges.setdefault(f, []).append((t, item["distance_nm"]))
             edges.setdefault(t, []).append((f, item["distance_nm"]))
 
+    # ✅ 3. Load no-flight zones (sau khi có points/edges)
+    no_flight_zones = load_no_flight_zones()
 
-    # 3. Load no-flight zones
-    no_flight_zones = [
-        Polygon([(pt[1], pt[0]) for pt in z["coordinates"]])
-        for z in No_Flight_collection.find({}, {"_id": 0, "coordinates": 1})
-    ]
-
+    # ✅ 4. Tìm đường đi
     paths = k_shortest_paths(start, end, k, points, edges, no_flight_zones)
 
     if not paths:
@@ -311,31 +370,60 @@ def suggest_alt_flight():
 
     return jsonify(result), 200
 
+
 # Route POST để thêm dữ liệu vùng cấm bay
 @app.route("/no_flight", methods=["POST"])
 def add_no_flight():
     data = request.json
-    if not data or "name" not in data or "coordinates" not in data:
-        return jsonify({"error": "Thiếu tên hoặc tọa độ"}), 400
+    if not data or "name" not in data:
+        return jsonify({"error": "Thiếu tên vùng cấm bay"}), 400
 
     name = data["name"]
-    coordinates = data["coordinates"]
 
-    if not isinstance(coordinates, list) or not all(
-        isinstance(coord, list) and len(coord) == 2 and all(isinstance(x, (int, float)) for x in coord)
-        for coord in coordinates
-    ):
-        return jsonify({"error": "Tọa độ phải là danh sách các cặp [x, y]"}), 400
+    # Nếu là vùng đa giác (polygon)
+    if "coordinates" in data:
+        coordinates = data["coordinates"]
+        if not isinstance(coordinates, list) or not all(
+            isinstance(coord, list) and len(coord) == 2 and all(isinstance(x, (int, float)) for x in coord)
+            for coord in coordinates
+        ):
+            return jsonify({"error": "Tọa độ phải là danh sách các cặp [lat, lng]"}), 400
 
-    no_flight_data = {
-        "name": name,
-        "coordinates": coordinates
-    }
-    result = No_Flight_collection.insert_one(no_flight_data)
-    return jsonify({
-        "message": "Đã thêm vùng cấm bay",
-        "id": str(result.inserted_id)
-    }), 201
+        no_flight_data = {
+            "name": name,
+            "type": "polygon",
+            "coordinates": coordinates
+        }
+        result = No_Flight_collection.insert_one(no_flight_data)
+        return jsonify({
+            "message": "Đã thêm vùng cấm bay đa giác",
+            "id": str(result.inserted_id)
+        }), 201
+
+    # Nếu là vùng cấm bay hình tròn
+    elif "center" in data and "radius" in data:
+        center = data["center"]
+        radius = data["radius"]
+        if (not isinstance(center, list) or len(center) != 2 or
+            not all(isinstance(x, (int, float)) for x in center)):
+            return jsonify({"error": "Tâm phải là [lat, lng]"}), 400
+        if not isinstance(radius, (int, float)) or radius <= 0:
+            return jsonify({"error": "Bán kính phải là số dương"}), 400
+
+        no_flight_data = {
+            "name": name,
+            "type": "circle",
+            "center": center,
+            "radius": radius
+        }
+        result = No_Flight_collection.insert_one(no_flight_data)
+        return jsonify({
+            "message": "Đã thêm vùng cấm bay hình tròn",
+            "id": str(result.inserted_id)
+        }), 201
+
+    else:
+        return jsonify({"error": "Thiếu dữ liệu vùng cấm bay"}), 400
 
 @app.route("/flight_path", methods=["POST"])
 def add_flight_path():
@@ -359,8 +447,39 @@ def add_flight_path():
         "message": "Đã thêm đường bay",
         "id": str(result.inserted_id)
     }), 201
+@app.route("/flight_path/all", methods=["GET"])
+def get_all_flight_paths():
+    flights = list(flight_path_collection.find({}, {"_id": 0}))
+    return jsonify(flights), 200
+@app.route("/flight_path/check", methods=["POST"])
+def check_flight_path_violation():
+    data = request.json
+    waypoints = data.get("waypoints", [])
+    if len(waypoints) < 2:
+        return jsonify({"error": "Cần ít nhất 2 điểm"}), 400
 
+    # Load points
+    point_map = {
+        p["ten_duong"]: (p["kinh_do"], p["vi_do"])
+        for p in point_collection.find({}, {"_id": 0, "ten_duong": 1, "vi_do": 1, "kinh_do": 1})
+        if p.get("vi_do") and p.get("kinh_do")
+    }
+
+    # Load vùng cấm bay
+    zones = load_no_flight_zones()
+
+    # Tạo các đoạn và kiểm tra
+    violations = []
+    for i in range(len(waypoints) - 1):
+        p1, p2 = waypoints[i], waypoints[i+1]
+        if p1 not in point_map or p2 not in point_map:
+            continue
+        segment = LineString([point_map[p1], point_map[p2]])
+        if is_blocked_by_no_flight(segment, zones):
+            violations.append({"from": p1, "to": p2})
+
+    return jsonify({"violations": violations}), 200
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))  # lấy PORT từ biến môi trường của Render
+    port = int(os.environ.get("PORT", 5000))
     app.run(host='0.0.0.0', port=port)
