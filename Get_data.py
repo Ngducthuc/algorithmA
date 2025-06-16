@@ -10,7 +10,7 @@ import os
 # Khởi tạo Flask app
 app = Flask(__name__)
 CORS(app)
-connectAPI = 'https://algorithma-84og.onrender.com'
+connectAPI = 'http://127.0.0.1:5000'
 connectAPI2 = 'http://localhost:5000'
 
 # Kết nối MongoDB
@@ -369,6 +369,20 @@ def suggest_alt_flight():
         })
 
     return jsonify(result), 200
+
+@app.route("/flight_path/delete", methods=["POST"])
+def delete_flight_path():
+    data = request.json
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "Thiếu tên chuyến bay để xóa"}), 400
+
+    result = flight_path_collection.delete_one({"name": name})
+    if result.deleted_count > 0:
+        return jsonify({"message": f"Đã xóa chuyến bay {name}"}), 200
+    else:
+        return jsonify({"error": "Không tìm thấy chuyến bay để xóa"}), 404
+
 
 
 # Route POST để thêm dữ liệu vùng cấm bay
