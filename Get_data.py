@@ -10,7 +10,7 @@ import os
 # Khởi tạo Flask app
 app = Flask(__name__)
 CORS(app)
-connectAPI = 'http://127.0.0.1:5000'
+connectAPI = 'https://algorithma-84og.onrender.com'
 connectAPI2 = 'http://localhost:5000'
 
 # Kết nối MongoDB
@@ -328,13 +328,21 @@ def suggest_alt_flight():
         if p.get("vi_do") is not None and p.get("kinh_do") is not None
     }
 
-    # 2. Load graph
+    # 2. Load graph có xét chiều
     edges = {}
     for item in distance_collection.find({}, {"_id": 0, "from": 1, "to": 1, "distance_nm": 1}):
         f, t = item["from"], item["to"]
-        if f in points and t in points:
-            edges.setdefault(f, []).append((t, item["distance_nm"]))
+        if f not in points or t not in points:
+            continue
+
+        # Lấy thông tin chiều từ point_collection
+        from_point = point_collection.find_one({"ten_duong": f}, {"_id": 0, "chieu": 1})
+        chieu = from_point.get("chieu", 0) if from_point else 0  # mặc định là 2 chiều
+
+        edges.setdefault(f, []).append((t, item["distance_nm"]))
+        if chieu == 0:
             edges.setdefault(t, []).append((f, item["distance_nm"]))
+
 
     # ✅ 3. Load no-flight zones (sau khi có points/edges)
     no_flight_zones = load_no_flight_zones()
@@ -493,6 +501,20 @@ def check_flight_path_violation():
             violations.append({"from": p1, "to": p2})
 
     return jsonify({"violations": violations}), 200
+
+@app.route("/no_flight", methods=["DELETE"])
+def delete_no_flight_zone():
+    data = request.json
+    name = data.get("name")
+    if not name:
+        return jsonify({"error": "Thiếu tên vùng cấm"}), 400
+
+    result = No_Flight_collection.delete_one({"name": name})
+    if result.deleted_count > 0:
+        return jsonify({"message": f"Đã xóa vùng cấm {name}"}), 200
+    else:
+        return jsonify({"error": "Không tìm thấy vùng cấm để xóa"}), 404
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
