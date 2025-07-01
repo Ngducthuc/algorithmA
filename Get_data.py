@@ -241,21 +241,6 @@ def a_star(start, goal, points_dict, graph_edges, no_flight_polygons):
 
             if is_blocked_by_no_flight(segment, no_flight_polygons):
                 continue
-            # violate = False
-            # for zone in no_flight_polygons:
-            #     if isinstance(zone, Polygon):
-            #         if segment.intersects(zone):
-            #             violate = True
-            #             break
-            #     elif isinstance(zone, tuple):
-            #         center, radius_km = zone
-            #         circle = center.buffer(radius_km / 111.32)
-            #         if segment.intersects(circle):
-            #             violate = True
-            #             break
-            # if violate:
-            #     continue
-
             new_path = path + [neighbor]
             cost = sum(
                 graph_edges[new_path[i]][j][1]
@@ -316,7 +301,7 @@ def suggest_alt_flight():
     data = request.json
     start = data.get("from")
     end = data.get("to")
-    k = int(data.get("k", 3)) # Số lượng đường đi cần tìm
+    k = int(data.get("k", 5)) # Số lượng đường đi cần tìm
 
     if not start or not end:
         return jsonify({"error": "Thiếu điểm bắt đầu hoặc kết thúc"}), 400
